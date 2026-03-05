@@ -127,7 +127,29 @@ def get_current_sprint(latest_date):
 # ==========================================
 with st.expander("⚙️ Daten-Upload & Kontostand", expanded=True):
     uploaded_file = st.file_uploader("Buchungsliste (CSV) hochladen", type="csv")
-    bal = st.number_input("Aktueller Saldo Girokonto (€)", value=0.0, step=10.0)
+    bal = st.number_input("Aktueller Saldo Girokonto (laut ING-App in €)", value=0.0, step=10.0)
+    
+    st.markdown("---")
+    st.markdown("**⏳ Vorgemerkte Umsätze (Noch nicht in CSV)**")
+    st.caption("Füge hier Beträge hinzu, die bei der ING noch als 'vorgemerkt' stehen. Sie werden direkt vom Budget abgezogen.")
+    
+    # Initialisiere das leere Pending-Grid in der Session State
+    if 'pending_df' not in st.session_state:
+        st.session_state.pending_df = pd.DataFrame([{"Zweck": "", "Betrag": 0.0}])
+        
+    # Interaktiver Data Editor
+    edited_pending = st.data_editor(
+        st.session_state.pending_df,
+        column_config={
+            "Zweck": st.column_config.TextColumn("Verwendungszweck (Optional)"),
+            "Betrag": st.column_config.NumberColumn("Betrag (€)", min_value=0.0, format="%.2f")
+        },
+        num_rows="dynamic",
+        use_container_width=True,
+        hide_index=True
+    )
+    st.session_state.pending_df = edited_pending
+    pending_sum = edited_pending["Betrag"].sum()
 
 if uploaded_file:
     df_all = process_csv(uploaded_file)
@@ -137,16 +159,19 @@ if uploaded_file:
     s_start, s_end, phase_name = get_current_sprint(latest_date)
     phase_df = df_all[(df_all['Buchungsdatum'] >= s_start) & (df_all['Buchungsdatum'] <= s_end)].copy()
     
-    # Lifestyle-Berechnung für aktuellen Sprint
+    # Lifestyle-Berechnung für aktuellen Sprint (INKL. VORGEMERKTER UMSÄTZE)
     life_kats = [k for k in CATEGORIES.keys() if any(x in k for x in ['Spaß', 'Amazon', 'Wetten', 'Klarna', 'Mode'])]
     sum_life_phase = abs(phase_df[phase_df['Kategorie'].isin(life_kats) & (phase_df['Betrag'] < 0)]['Betrag'].sum())
-    rem_life_phase = max(0, LIMIT_LIFESTYLE_PHASE - sum_life_phase)
+    
+    total_life_spent = sum_life_phase + pending_sum
+    rem_life_phase = max(0, LIMIT_LIFESTYLE_PHASE - total_life_spent)
+    real_bal = bal - pending_sum
     
     # Pacing Logic (Burn-Rate)
     total_days = (s_end - s_start).days + 1
     days_passed = (latest_date - s_start).days + 1
     ideal_burn = LIMIT_LIFESTYLE_PHASE * (days_passed / total_days)
-    burn_status = "🟢 Optimal (Unter Budget)" if sum_life_phase <= ideal_burn else "🔴 Zu hoch (Burn-Rate reduzieren!)"
+    burn_status = "🟢 Optimal (Unter Budget)" if total_life_spent <= ideal_burn else "🔴 Zu hoch (Burn-Rate reduzieren!)"
     
     # CSS für das Metric-Styling (Dynamisch nach Phase)
     wrapper_class = "phase-felix" if "Felix" in phase_name else "phase-janina"
@@ -158,16 +183,17 @@ if uploaded_file:
     with tab1:
         st.markdown(f"<h3 style='text-align: center; color: #334155; margin-bottom: 20px;'>Aktueller Sprint: {phase_name}</h3>", unsafe_allow_html=True)
         
-        # Top KPIs
-        c1, c2 = st.columns(2)
-        c1.metric("Verfügbares Restbudget", euro(rem_life_phase))
-        c2.metric("Bereits Ausgegeben", euro(sum_life_phase))
+        # Top KPIs (Mobile-optimiert)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Echter Saldo", euro(real_bal), delta=f"-{pending_sum:.2f} € blockiert", delta_color="inverse")
+        c2.metric("Restbudget", euro(rem_life_phase))
+        c3.metric("Ausgegeben", euro(total_life_spent))
         
         st.markdown("<br>", unsafe_allow_html=True)
         
         # Pacing Widget
         st.markdown(f"**Pacing (Tag {days_passed} von {total_days})**")
-        progress = min(sum_life_phase / LIMIT_LIFESTYLE_PHASE, 1.0)
+        progress = min(total_life_spent / LIMIT_LIFESTYLE_PHASE, 1.0)
         st.progress(progress)
         st.caption(f"Status: **{burn_status}** | Ideallinie heute: {euro(ideal_burn)}")
         
